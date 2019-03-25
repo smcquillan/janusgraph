@@ -14,13 +14,8 @@
 
 package org.janusgraph.graphdb.tinkerpop.optimize;
 
-import org.apache.tinkerpop.gremlin.process.traversal.step.TraversalParent;
-import org.apache.tinkerpop.gremlin.process.traversal.step.branch.BranchStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.branch.OptionalStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.branch.RepeatStep;
-import org.apache.tinkerpop.gremlin.process.traversal.step.map.MatchStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.branch.UnionStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.util.EmptyStep;
-import org.apache.tinkerpop.gremlin.process.traversal.util.PathUtil;
 import org.janusgraph.graphdb.database.StandardJanusGraph;
 import org.janusgraph.graphdb.query.QueryUtil;
 import org.janusgraph.graphdb.transaction.StandardJanusGraphTx;
@@ -34,11 +29,8 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.map.VertexStep;
 import org.apache.tinkerpop.gremlin.process.traversal.strategy.AbstractTraversalStrategy;
 import org.apache.tinkerpop.gremlin.process.traversal.util.TraversalHelper;
 import org.apache.tinkerpop.gremlin.structure.Graph;
-import org.javatuples.Pair;
 
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -49,9 +41,6 @@ import java.util.Set;
 public class JanusGraphLocalQueryOptimizerStrategy extends AbstractTraversalStrategy<TraversalStrategy.ProviderOptimizationStrategy> implements TraversalStrategy.ProviderOptimizationStrategy {
 
     private static final JanusGraphLocalQueryOptimizerStrategy INSTANCE = new JanusGraphLocalQueryOptimizerStrategy();
-
-    private static final List<Class<? extends Step>> MULTIQUERY_INCOMPATIBLE_STEPS =
-        Arrays.asList(RepeatStep.class, MatchStep.class, BranchStep.class, OptionalStep.class);
 
     private JanusGraphLocalQueryOptimizerStrategy() {
     }
@@ -66,6 +55,18 @@ public class JanusGraphLocalQueryOptimizerStrategy extends AbstractTraversalStra
         //If this is a compute graph then we can't apply local traversal optimisation at this stage.
         final StandardJanusGraph janusGraph = graph instanceof StandardJanusGraphTx ? ((StandardJanusGraphTx) graph).getGraph() : (StandardJanusGraph) graph;
         final boolean useMultiQuery = !TraversalHelper.onGraphComputer(traversal) && janusGraph.getConfiguration().useMultiQuery();
+
+        /*
+                ====== UNION STEP ======
+         */
+
+        if (useMultiQuery)
+        {
+            TraversalHelper.getStepsOfClass(UnionStep.class, traversal).forEach(originalStep -> {
+                JanusGraphUnionStep unionStep = new JanusGraphUnionStep((UnionStep)originalStep);
+                TraversalHelper.replaceStep(originalStep, unionStep, traversal);
+            });
+        }
 
         /*
                 ====== VERTEX STEP ======
@@ -88,7 +89,7 @@ public class JanusGraphLocalQueryOptimizerStrategy extends AbstractTraversalStra
                 vertexStep.setLimit(0, QueryUtil.mergeHighLimits(limit, vertexStep.getHighLimit()));
             }
 
-            if (useMultiQuery && !(isChildOf(vertexStep, MULTIQUERY_INCOMPATIBLE_STEPS))) {
+            if (useMultiQuery) {
                 vertexStep.setUseMultiQuery(true);
             }
         });
@@ -109,7 +110,7 @@ public class JanusGraphLocalQueryOptimizerStrategy extends AbstractTraversalStra
                 //We cannot fold in orders or ranges since they are not local
             }
 
-            if (useMultiQuery && !(isChildOf(propertiesStep, MULTIQUERY_INCOMPATIBLE_STEPS))) {
+            if (useMultiQuery) {
                 propertiesStep.setUseMultiQuery(true);
             }
         });
@@ -163,7 +164,7 @@ public class JanusGraphLocalQueryOptimizerStrategy extends AbstractTraversalStra
             vertexStep.setTraversal(traversal);
             TraversalHelper.replaceStep(localStep, vertexStep, traversal);
 
-            if (useMultiQuery && !(isChildOf(vertexStep, MULTIQUERY_INCOMPATIBLE_STEPS))) {
+            if (useMultiQuery) {
                 vertexStep.setUseMultiQuery(true);
             }
         }

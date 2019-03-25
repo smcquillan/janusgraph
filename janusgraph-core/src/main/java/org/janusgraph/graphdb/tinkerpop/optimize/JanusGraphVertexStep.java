@@ -37,6 +37,7 @@ import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -48,17 +49,17 @@ import com.google.common.base.Preconditions;
  */
 public class JanusGraphVertexStep<E extends Element> extends VertexStep<E> implements HasStepFolder<Vertex, E>, Profiling, MultiQueriable<Vertex,E> {
 
+    private boolean initialized = false;
+    private boolean useMultiQuery = false;
+    private Map<JanusGraphVertex, Iterable<? extends JanusGraphElement>> multiQueryResults = null;
+    private QueryProfiler queryProfiler = QueryProfiler.NO_OP;
+
     public JanusGraphVertexStep(VertexStep<E> originalStep) {
         super(originalStep.getTraversal(), originalStep.getReturnClass(), originalStep.getDirection(), originalStep.getEdgeLabels());
         originalStep.getLabels().forEach(this::addLabel);
         this.hasContainers = new ArrayList<>();
         this.limit = Query.NO_LIMIT;
     }
-
-    private boolean initialized = false;
-    private boolean useMultiQuery = false;
-    private Map<JanusGraphVertex, Iterable<? extends JanusGraphElement>> multiQueryResults = null;
-    private QueryProfiler queryProfiler = QueryProfiler.NO_OP;
 
     @Override
     public void setUseMultiQuery(boolean useMultiQuery) {
@@ -77,7 +78,6 @@ public class JanusGraphVertexStep<E extends Element> extends VertexStep<E> imple
         return query;
     }
 
-    @SuppressWarnings("deprecation")
     private void initialize() {
         assert !initialized;
         initialized = true;
@@ -85,18 +85,32 @@ public class JanusGraphVertexStep<E extends Element> extends VertexStep<E> imple
             if (!starts.hasNext()) {
                 throw FastNoSuchElementException.instance();
             }
-            final JanusGraphMultiVertexQuery multiQuery = JanusGraphTraversalUtil.getTx(traversal).multiQuery();
             final List<Traverser.Admin<Vertex>> vertices = new ArrayList<>();
-            starts.forEachRemaining(v -> {
-                vertices.add(v);
-                multiQuery.addVertex(v.get());
-            });
+            starts.forEachRemaining(v -> vertices.add(v));
             starts.add(vertices.iterator());
-            assert vertices.size() > 0;
-            makeQuery(multiQuery);
-
-            multiQueryResults = (Vertex.class.isAssignableFrom(getReturnClass())) ? multiQuery.vertices() : multiQuery.edges();
+            initializeMultiQuery(vertices);
         }
+    }
+
+    void initializeMultiQuery(final List<Traverser.Admin<Vertex>> vertices) {
+
+        assert vertices.size() > 0;
+
+        final JanusGraphMultiVertexQuery multiQuery = JanusGraphTraversalUtil.getTx(traversal).multiQuery();
+        vertices.forEach(v -> multiQuery.addVertex(v.get()));
+        makeQuery(multiQuery);
+
+        Map<JanusGraphVertex, Iterable<? extends JanusGraphElement>> results = (Vertex.class.isAssignableFrom(getReturnClass())) ? multiQuery.vertices() : multiQuery.edges();
+        if (multiQueryResults == null)
+        {
+            multiQueryResults = results;
+        }
+        else
+        {
+            multiQueryResults.putAll(results);
+            results.clear();
+        }
+        initialized = true;
     }
 
     @Override
@@ -107,13 +121,18 @@ public class JanusGraphVertexStep<E extends Element> extends VertexStep<E> imple
 
     @Override
     protected Iterator<E> flatMap(final Traverser.Admin<Vertex> traverser) {
+        Iterable<? extends JanusGraphElement> result;
         if (useMultiQuery) {
-            assert multiQueryResults != null;
-            return (Iterator<E>) multiQueryResults.get(traverser.get()).iterator();
+            if (multiQueryResults == null || !multiQueryResults.containsKey(traverser.get()))
+            {
+                initializeMultiQuery(Arrays.asList(traverser));
+            }
+            result = multiQueryResults.get(traverser.get());
         } else {
             final JanusGraphVertexQuery query = makeQuery((JanusGraphTraversalUtil.getJanusGraphVertex(traverser)).query());
-            return (Vertex.class.isAssignableFrom(getReturnClass())) ? query.vertices().iterator() : query.edges().iterator();
+            result = (Vertex.class.isAssignableFrom(getReturnClass())) ? query.vertices() : query.edges();
         }
+        return (Iterator<E>) result.iterator();
     }
 
     @Override

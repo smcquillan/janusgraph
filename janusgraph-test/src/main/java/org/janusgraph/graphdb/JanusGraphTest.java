@@ -98,6 +98,7 @@ import org.janusgraph.graphdb.schema.VertexLabelDefinition;
 import org.janusgraph.graphdb.serializer.SpecialInt;
 import org.janusgraph.graphdb.serializer.SpecialIntSerializer;
 import org.janusgraph.graphdb.tinkerpop.optimize.JanusGraphStep;
+import org.janusgraph.graphdb.tinkerpop.optimize.JanusGraphUnionStep;
 import org.janusgraph.graphdb.tinkerpop.optimize.JanusGraphPropertiesStep;
 import org.janusgraph.graphdb.tinkerpop.optimize.JanusGraphVertexStep;
 import org.janusgraph.graphdb.transaction.StandardJanusGraphTx;
@@ -113,7 +114,9 @@ import org.apache.tinkerpop.gremlin.process.traversal.Traversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversal;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.GraphTraversalSource;
 import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.__;
+import org.apache.tinkerpop.gremlin.process.traversal.step.branch.ChooseStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.branch.LocalStep;
+import org.apache.tinkerpop.gremlin.process.traversal.step.branch.RepeatStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.filter.TraversalFilterStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.GraphStep;
 import org.apache.tinkerpop.gremlin.process.traversal.step.map.OrderGlobalStep;
@@ -3939,8 +3942,23 @@ public abstract class JanusGraphTest extends JanusGraphBaseTest {
         assertNumStep(superV * 10, 2, gts.V().has("id", sid).local(__.outE("knows").has("weight", P.gte(1)).has("weight", P.lt(3)).limit(10)), JanusGraphStep.class, JanusGraphVertexStep.class);
         assertNumStep(superV * 10, 1, gts.V().has("id", sid).local(__.outE("knows").has("weight", P.between(1, 3)).order().by("weight", decr).limit(10)), JanusGraphStep.class);
         assertNumStep(superV * 10, 0, gts.V().has("id", sid).local(__.outE("knows").has("weight", P.between(1, 3)).order().by("weight", decr).limit(10)), LocalStep.class);
+
         clopen(option(USE_MULTIQUERY), true);
         gts = graph.traversal();
+
+        t = gts.V(sv[0]).outE().inV().choose(__.inE("knows").has("weight", 0),__.inE("knows").has("weight", 1), __.inE("knows").has("weight", 2)).profile("~metrics");
+        assertNumStep(numV * 2, 2, (GraphTraversal)t, ChooseStep.class, JanusGraphVertexStep.class);
+        assertTrue(queryProfilerAnnotationIsPresent(t, QueryProfiler.MULTIQUERY_ANNOTATION));
+
+        t = gts.V(sv[0]).outE().inV().union(__.inE("knows").has("weight", 0),__.inE("knows").has("weight", 1),__.inE("knows").has("weight", 2)).profile("~metrics");
+        assertNumStep(numV * 6, 2, (GraphTraversal)t, JanusGraphUnionStep.class, JanusGraphVertexStep.class);
+        assertTrue(queryProfilerAnnotationIsPresent(t, QueryProfiler.MULTIQUERY_ANNOTATION));
+
+        int[] loop = {0}; // repeat starts from vertex with id 0 and goes in to the sv[0] vertex then loops back out to the vertex with the next id
+        t = gts.V(vs[0]).repeat(__.inE("knows").outV().hasId(sv[0].id()).outE("knows").inV().sideEffect(e -> loop[0] = e.loops()).has("id", loop[0])).times(numV).profile("~metrics");
+        assertNumStep(1, 1, (GraphTraversal)t, RepeatStep.class);
+        assertEquals(numV - 1, loop[0]);
+        assertTrue(queryProfilerAnnotationIsPresent(t, QueryProfiler.MULTIQUERY_ANNOTATION));
 
         assertNumStep(superV * (numV / 5), 2, gts.V().has("id", sid).outE("knows").has("weight", 1), JanusGraphStep.class, JanusGraphVertexStep.class);
         assertNumStep(superV * (numV / 5 * 2), 2, gts.V().has("id", sid).outE("knows").has("weight", P.between(1, 3)), JanusGraphStep.class, JanusGraphVertexStep.class);
@@ -3952,12 +3970,12 @@ public abstract class JanusGraphTest extends JanusGraphBaseTest {
         //Verify traversal metrics when all reads are from cache (i.e. no backend queries)
         t = gts.V().has("id", sid).local(__.outE("knows").has("weight", P.between(1, 3)).order().by("weight", decr).limit(10)).profile("~metrics");
         assertCount(superV * 10, t);
-        metrics = t.asAdmin().getSideEffects().get("~metrics");
+        assertTrue(queryProfilerAnnotationIsPresent(t, QueryProfiler.MULTIQUERY_ANNOTATION));
 
         //Verify that properties also use multi query
         t = gts.V().has("id", sid).values("names").profile("~metrics");
         assertCount(superV * numV, t);
-        metrics = t.asAdmin().getSideEffects().get("~metrics");
+        assertTrue(queryProfilerAnnotationIsPresent(t, QueryProfiler.MULTIQUERY_ANNOTATION));
 
         clopen(option(USE_MULTIQUERY), true);
         gts = graph.traversal();
@@ -3965,13 +3983,17 @@ public abstract class JanusGraphTest extends JanusGraphBaseTest {
         //Verify traversal metrics when having to read from backend [same query as above]
         t = gts.V().has("id", sid).local(__.outE("knows").has("weight", P.gte(1)).has("weight", P.lt(3)).order().by("weight", decr).limit(10)).profile("~metrics");
         assertCount(superV * 10, t);
-        metrics = t.asAdmin().getSideEffects().get("~metrics");
+        assertTrue(queryProfilerAnnotationIsPresent(t, QueryProfiler.MULTIQUERY_ANNOTATION));
 
         //Verify that properties also use multi query [same query as above]
         t = gts.V().has("id", sid).values("names").profile("~metrics");
         assertCount(superV * numV, t);
-        metrics = t.asAdmin().getSideEffects().get("~metrics");
+        assertTrue(queryProfilerAnnotationIsPresent(t, QueryProfiler.MULTIQUERY_ANNOTATION));
+    }
 
+    private static boolean queryProfilerAnnotationIsPresent(Traversal t, String queryProfilerAnnotation) {
+        TraversalMetrics metrics = t.asAdmin().getSideEffects().get("~metrics");
+        return metrics.toString().contains(queryProfilerAnnotation + "=true");
     }
 
     private static void assertNumStep(int expectedResults, int expectedSteps, GraphTraversal traversal, Class<? extends Step>... expectedStepTypes) {

@@ -293,4 +293,10 @@ public interface CQLConfigOptions {
             ConfigOption.Type.MASKABLE,
             String.class);
 
+    ConfigOption<Boolean> JMX_REPORTING = new ConfigOption<>(
+            CQL_NS,
+            "jmx-reporting",
+            "Enable JMX reporting",
+            ConfigOption.Type.LOCAL,
+            true);
 }

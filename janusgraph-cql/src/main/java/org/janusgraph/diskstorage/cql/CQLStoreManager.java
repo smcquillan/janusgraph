@@ -25,6 +25,7 @@ import static org.janusgraph.diskstorage.cql.CQLConfigOptions.ATOMIC_BATCH_MUTAT
 import static org.janusgraph.diskstorage.cql.CQLConfigOptions.BATCH_STATEMENT_SIZE;
 import static org.janusgraph.diskstorage.cql.CQLConfigOptions.CLUSTER_NAME;
 import static org.janusgraph.diskstorage.cql.CQLConfigOptions.ONLY_USE_LOCAL_CONSISTENCY_FOR_SYSTEM_OPERATIONS;
+import static org.janusgraph.diskstorage.cql.CQLConfigOptions.JMX_REPORTING;
 import static org.janusgraph.diskstorage.cql.CQLConfigOptions.KEYSPACE;
 import static org.janusgraph.diskstorage.cql.CQLConfigOptions.LOCAL_CORE_CONNECTIONS_PER_HOST;
 import static org.janusgraph.diskstorage.cql.CQLConfigOptions.LOCAL_DATACENTER;
@@ -243,7 +244,7 @@ public class CQLStoreManager extends DistributedStoreManager implements KeyColum
             throw new PermanentBackendException("Error initialising cluster contact points", e);
         }
 
-        final Builder builder = Cluster.builder()
+        final Builder builder = (configuration.get(JMX_REPORTING) ? Cluster.builder() : Cluster.builder().withoutJMXReporting())
                 .addContactPointsWithPorts(contactPoints)
                 .withClusterName(configuration.get(CLUSTER_NAME));
 
